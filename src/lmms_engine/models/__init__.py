@@ -13,6 +13,7 @@ from .qwen2_5_omni import (
 )
 from .qwen2_5_vl import apply_liger_kernel_to_qwen2_5_vl
 from .qwen2_audio import apply_liger_kernel_to_qwen2_audio
+from .qwen3 import apply_liger_kernel_to_qwen3
 from .qwen3_dllm import Qwen3DLLMConfig, Qwen3DLLMForMaskedLM
 from .qwen3_moe import apply_liger_kernel_to_qwen3_moe
 from .qwen3_omni_moe import (
@@ -39,6 +40,7 @@ __all__ = [
     "AeroProcessor",
     "apply_liger_kernel_to_llava_onevision",
     "apply_liger_kernel_to_qwen2",
+    "apply_liger_kernel_to_qwen3",
     "Qwen2_5OmniThinkerConfig",
     "Qwen2_5OmniThinkerForConditionalGeneration",
     "apply_liger_kernel_to_qwen2_5_omni",
