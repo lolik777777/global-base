@@ -1,7 +1,5 @@
-from functools import wraps
-from typing import Optional
+from functools import partial, wraps
 
-import torch
 from packaging import version
 
 try:
@@ -36,6 +34,7 @@ transformer_version = version.parse(transformers.__version__)
 SUPPORTED_TRANSFORMER_VERSION = "4.46.1"
 TRANSFORMER_DEPRECATION_WARNING = "Support for transformers versions < 4.46.1 will soon be discontinued due to issues with incorrect gradient accumulation. \n Please consider upgrading to avoid potential issues. See details: https://github.com/huggingface/transformers/pull/34191"
 
+import lmms_engine.parallel.process_group_manager as pgm
 from lmms_engine.models.monkey_patch import MONKEY_PATCHER
 from lmms_engine.utils.logging_utils import Logging
 
@@ -97,7 +96,6 @@ def apply_liger_kernel_to_qwen3_vl_moe(
         modeling_qwen3_vl_moe.Qwen3VLMoeTextModel.forward = qwen3_vl_moe_text_model_forward
         modeling_qwen3_vl_moe.Qwen3VLMoeTextDecoderLayer.forward = qwen3_vl_moe_decoder_layer_forward
         modeling_qwen3_vl_moe.Qwen3VLMoeTextAttention.forward = qwen3_vl_moe_attn_forward
-        modeling_qwen3_vl_moe.Qwen3VLMoeTextExperts.forward = qwen3_vl_moe_experts_forward
 
     if get_ulysses_sequence_parallel_world_size() > 1:
         patch_vlm_for_ulysses_input_slicing(modeling_qwen3_vl_moe.Qwen3VLMoeModel)
@@ -121,25 +119,27 @@ def apply_liger_kernel_to_qwen3_vl_moe(
                 f"Got: {type(model)}."
             )
 
-        if vision_model is not None and layer_norm:
+        _patch_qwen3_vl_moe_rms_norm = partial(_patch_rms_norm_module, offset=0.0, casting_mode="llama")
+
+        if text_model is not None:
+            if rms_norm:
+                _patch_qwen3_vl_moe_rms_norm(text_model.norm)
+            for decoder_layer in text_model.layers:
+                if rms_norm:
+                    _patch_qwen3_vl_moe_rms_norm(decoder_layer.input_layernorm)
+                    _patch_qwen3_vl_moe_rms_norm(decoder_layer.post_attention_layernorm)
+                    self_attn = getattr(decoder_layer, "self_attn", None)
+                    if self_attn is not None:
+                        if hasattr(self_attn, "q_norm") and self_attn.q_norm is not None:
+                            _patch_qwen3_vl_moe_rms_norm(self_attn.q_norm)
+                        if hasattr(self_attn, "k_norm") and self_attn.k_norm is not None:
+                            _patch_qwen3_vl_moe_rms_norm(self_attn.k_norm)
+
+        if vision_model is not None:
             for vision_block in vision_model.blocks:
                 _patch_layer_norm_module(vision_block.norm1)
                 _patch_layer_norm_module(vision_block.norm2)
 
-        if text_model is not None:
-            if rms_norm:
-                _patch_rms_norm_module(text_model.norm)
-            for decoder_layer in text_model.layers:
-                if swiglu:
-                    if hasattr(decoder_layer.mlp, "experts"):
-                        experts_module = decoder_layer.mlp.experts
-                        if not hasattr(experts_module, "gate_up_proj"):
-                            for expert in experts_module:
-                                _patch_swiglu_module(expert, LigerSwiGLUMLP)
-                    else:
-                        _patch_swiglu_module(decoder_layer.mlp, LigerSwiGLUMLP)
-                if rms_norm:
-                    _patch_rms_norm_module(decoder_layer.input_layernorm)
-                    _patch_rms_norm_module(decoder_layer.post_attention_layernorm)
-
-    modeling_qwen3_vl_moe.Qwen3VLMoeTextSparseMoeBlock.forward = qwen3_vl_moe_moe_sparse_layer_forward
+    if pgm.process_group_manager.enable_parallel:
+        modeling_qwen3_vl_moe.Qwen3VLMoeTextExperts.forward = qwen3_vl_moe_experts_forward
+        modeling_qwen3_vl_moe.Qwen3VLMoeTextSparseMoeBlock.forward = qwen3_vl_moe_moe_sparse_layer_forward
